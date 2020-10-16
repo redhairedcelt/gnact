@@ -17,7 +17,7 @@ def get_edgelist(edge_table, engine, loiter_time=2):
     df_stops = pd.read_sql_query(f"""select edge.node, edge.arrival_time, 
                                  edge.depart_time, edge.time_diff,
                                  edge.destination, edge.position_count, edge.uid, 
-                                 sites.port_name
+                                 sites.port_name, sites.latitude, sites.longitude
                                  from {edge_table} as edge, sites as sites
                                  where edge.node=sites.site_id and
                                  edge.node > 0 and
@@ -28,10 +28,11 @@ def get_edgelist(edge_table, engine, loiter_time=2):
     df_list = pd.concat([df_stops.node, df_stops.port_name,
                          df_stops.node.shift(-1), df_stops.port_name.shift(-1),
                          df_stops.uid, df_stops.uid.shift(-1),
-                         df_stops.depart_time, df_stops.arrival_time.shift(-1)], axis=1)
+                         df_stops.depart_time, df_stops.arrival_time.shift(-1),
+                         df_stops.latitude, df_stops.longitude], axis=1)
     # rename the columns
     df_list.columns = ['Source_id', 'Source', 'Target_id', 'Target',
-                       'uid', 'target_uid', 'source_depart', 'target_arrival']
+                       'uid', 'target_uid', 'source_depart', 'target_arrival', 'lat', 'lon']
     # drop any row where the uid is not the same.
     # this will leave only the rows with at least 2 nodes with valid stops, making one valid edge.
     # The resulting df is the full edge list

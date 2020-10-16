@@ -36,10 +36,15 @@ def connect_engine(params, print_verbose=True):
     try:
         engine = (create_engine(f"postgresql://{params['user']}:{params['password']}"
                                 f"@{params['host']}:{params['port']}/{params['database']}"))
+        with engine.connect() as conn:
+            data = conn.execute('SELECT version()')
         if print_verbose is True:
             print('Engine created for', params['database'])
+            for row in data:
+                print(row[0])
         return engine
     except Exception as error:
+        print('Connection failed.')
         print(error)
 
 
