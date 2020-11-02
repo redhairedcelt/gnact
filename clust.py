@@ -4,6 +4,8 @@ import numpy as np
 import folium
 import datetime
 
+import skmob
+from skmob.preprocessing import detection, clustering
 
 # sklearn tools
 from sklearn.cluster import DBSCAN
@@ -35,12 +37,12 @@ def get_uid_posits(uid, engine_pg, start_time='2017-01-01 00:00:00', end_time='2
     return df_posits
 
 
-def get_clusters(df, method, eps_km=None, min_samp=None, time_window=None, Ceps=None):
+def get_clusters(df, method, eps_km=None, min_samp=None, eps_time=None, Ceps=None):
     """
     Given a Pandas df with a lat and lon, this function will return another df with the results of a clustering algo.
     Currently limited to SciKit-Learn's DBSCAN and OPTICS, but more will be added
     :param Ceps:
-    :param time_window:
+    :param eps_time:
     :param df: a df with a unique id, lat and lon in decimal degrees
     :param eps_km: The epsilon (or max_epsilon_ value used in the clustering algo.
     :param min_samp: The minimum samples for a cluster to form
@@ -90,24 +92,52 @@ def get_clusters(df, method, eps_km=None, min_samp=None, time_window=None, Ceps=
             df_results = pd.DataFrame(results_dict)
         elif method == 'stdbscan':
             # execute ST_DBSCAN. eps1 in km, eps2 in minutes
-            df_results = stdbscan.ST_DBSCAN(df=df, spatial_threshold=eps_km, temporal_threshold=time_window,
+            df_results = stdbscan.ST_DBSCAN(df=df, spatial_threshold=eps_km, temporal_threshold=eps_time,
                                             min_neighbors=min_samp)
         elif method == 'tdbscan':
             df_results = tdbscan.T_DBSCAN(df, Ceps, eps_km, min_samp)
+
+        elif method == 'dynamic_segmentation':
+            # make a new df to hold results
+            df_results = pd.DataFrame()
+            # turn the positions into a traj_df withink skmob package
+            tdf = skmob.TrajDataFrame(df, latitude='lat', longitude='lon', datetime='time')
+            # the stops_traj_df has one row per each stop
+            stdf = detection.stops(tdf, minutes_for_a_stop=eps_time, spatial_radius_km=eps_km, leaving_time=True,
+                                   no_data_for_minutes=360, min_speed_kmh=70)
+            if len(stdf) > 0:
+                # iterate through the stdf and make a df with all positions within each cluster
+                # appropriately labeled with that cluster id
+                for i in range(len(stdf)):
+                    # get cluster start, stop, and the id for this cluster
+                    cluster_start = stdf.datetime.loc[i,]
+                    cluster_end = stdf.leaving_datetime.loc[i,]
+                    cluster_id = i
+                    # gather all the position reports in the timeframe of this cluster
+                    cluster = tdf[(tdf.datetime > cluster_start) & (tdf.datetime < cluster_end)]
+                    cluster['clust_id'] = cluster_id
+                    cluster['time'] = cluster['datetime']
+                    cluster['lon'] = cluster['lng']
+                    cluster.drop(['lng','datetime'], inplace=True, axis=1)
+                    df_results = df_results.append(pd.DataFrame(cluster), ignore_index=True)
+
         else:
-            print("Error.  Method must be 'dbscan', 'optics', 'hdbscan', or stdbscan'.")
+            print("Error.  Method must be 'dbscan', 'optics', 'hdbscan', stdbscan', dynamic_segmentation,"
+                  "or static_segmentation.")
             return None
     except Exception as e:
         print('UID error in clustering.')
         print(e)
         return None
     # drop all -1 clust_id, which are all points not in clusters
-    df_results = df_results[df_results['clust_id'] != -1]
+    if type(pd.DataFrame()) == type(df_results) and len(df_results) > 0:
+        df_results = df_results[df_results['clust_id'] != -1]
+
     return df_results
 
 
 def calc_centers(df_results, clust_id_value='clust_id'):
-    """This function finds the center of a cluster from dbscan results,
+    """This function finds the center of a cluster from dbscan results (given lat, lon, time, and clust_id columns),
     and finds the average distance for each cluster point from its cluster center, as well as the min and max times.
     Returns a df."""
     # make a new df from the df_results grouped by cluster id
@@ -137,7 +167,6 @@ def calc_centers(df_results, clust_id_value='clust_id'):
     return df_centers
 
 
-
 def plot_clusters(df_posits, df_centers):
     # plot the track
     m = folium.Map(location=[df_posits.lat.median(), df_posits.lon.median()],
@@ -146,10 +175,9 @@ def plot_clusters(df_posits, df_centers):
     folium.PolyLine(points).add_to(m)
     # plot the clusters
     for row in df_centers.itertuples():
-        pp = folium.Html(f"Cluster: {row.clust_id} \n Count: {row.total_clust_count}\n" +
-                          f"Average Dist from center {round(row.average_dist_from_center, 2)}\n" +
-                          f"Min Time: {row.time_min}\n Max Time: {row.time_max}, Time Diff: {row.time_diff}")
-        popup = folium.Popup(pp, max_width=150)
+        popup = folium.Popup(f"Cluster: {row.clust_id}   Count: {row.total_clust_count}<BR>Average Dist from center "
+                             f"{round(row.average_dist_from_center, 2)}<BR>Min Time:  {row.time_min}<BR>Max Time: "
+                             f"{row.time_max}<BR>Time Diff: {row.time_diff}", max_width=220)
         folium.Marker(location=[row.average_lat, row.average_lon],
                       popup=popup).add_to(m)
     print(f'Plotted {len(df_centers)} total clusters.')
