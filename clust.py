@@ -5,7 +5,8 @@ import folium
 import datetime
 
 import skmob
-from skmob.preprocessing import detection, clustering
+from sklearn.neighbors.ball_tree import BallTree
+from skmob.preprocessing import detection
 
 # sklearn tools
 from sklearn.cluster import DBSCAN
@@ -13,8 +14,7 @@ from sklearn.cluster import OPTICS
 import hdbscan
 from sklearn.metrics.pairwise import haversine_distances
 
-from gnact import stdbscan
-from gnact import tdbscan
+from cluster_methods import tdbscan, stdbscan
 
 
 # %%
@@ -37,7 +37,7 @@ def get_uid_posits(uid, engine_pg, start_time='2017-01-01 00:00:00', end_time='2
     return df_posits
 
 
-def get_clusters(df, method, eps_km=None, min_samp=None, eps_time=None, Ceps=None):
+def calc_clusts(df, method, eps_km=None, min_samp=None, eps_time=None, Ceps=None):
     """
     Given a Pandas df with a lat and lon, this function will return another df with the results of a clustering algo.
     Currently limited to SciKit-Learn's DBSCAN and OPTICS, but more will be added
@@ -70,7 +70,7 @@ def get_clusters(df, method, eps_km=None, min_samp=None, eps_time=None, Ceps=Non
             results_dict = {'id': x_id, 'clust_id': dbscan.labels_, 'time': df['time'].values,
                             'lat': df['lat'].values, 'lon': df['lon'].values}
             # gather the output as a dataframe
-            df_results = pd.DataFrame(results_dict)
+            df_clusts = pd.DataFrame(results_dict)
         elif method == 'optics':
             # execute sklearn's OPTICS
             # 5km in radians is max eps
@@ -80,7 +80,7 @@ def get_clusters(df, method, eps_km=None, min_samp=None, eps_time=None, Ceps=Non
             results_dict = {'id': x_id, 'clust_id': optics.labels_, 'time': df['time'].values,
                             'lat': df['lat'].values, 'lon': df['lon'].values}
             # gather the output as a dataframe
-            df_results = pd.DataFrame(results_dict)
+            df_clusts = pd.DataFrame(results_dict)
         elif method == 'hdbscan':
             clusterer = hdbscan.HDBSCAN(algorithm='best', approx_min_span_tree=True,
                                         gen_min_span_tree=False, leaf_size=40,
@@ -89,17 +89,17 @@ def get_clusters(df, method, eps_km=None, min_samp=None, eps_time=None, Ceps=Non
             results_dict = {'id': x_id, 'clust_id': clusterer.labels_, 'time': df['time'].values,
                             'lat': df['lat'].values, 'lon': df['lon'].values}
             # gather the output as a dataframe
-            df_results = pd.DataFrame(results_dict)
+            df_clusts = pd.DataFrame(results_dict)
         elif method == 'stdbscan':
             # execute ST_DBSCAN. eps1 in km, eps2 in minutes
-            df_results = stdbscan.ST_DBSCAN(df=df, spatial_threshold=eps_km, temporal_threshold=eps_time,
-                                            min_neighbors=min_samp)
+            df_clusts = stdbscan.ST_DBSCAN(df=df, spatial_threshold=eps_km, temporal_threshold=eps_time,
+                                           min_neighbors=min_samp)
         elif method == 'tdbscan':
-            df_results = tdbscan.T_DBSCAN(df, Ceps, eps_km, min_samp)
+            df_clusts = tdbscan.T_DBSCAN(df, Ceps, eps_km, min_samp)
 
         elif method == 'dynamic_segmentation':
             # make a new df to hold results
-            df_results = pd.DataFrame()
+            df_clusts = pd.DataFrame()
             # turn the positions into a traj_df withink skmob package
             tdf = skmob.TrajDataFrame(df, latitude='lat', longitude='lon', datetime='time')
             # the stops_traj_df has one row per each stop
@@ -110,16 +110,16 @@ def get_clusters(df, method, eps_km=None, min_samp=None, eps_time=None, Ceps=Non
                 # appropriately labeled with that cluster id
                 for i in range(len(stdf)):
                     # get cluster start, stop, and the id for this cluster
-                    cluster_start = stdf.datetime.loc[i,]
-                    cluster_end = stdf.leaving_datetime.loc[i,]
+                    cluster_start = stdf.datetime.loc[i, ]
+                    cluster_end = stdf.leaving_datetime.loc[i, ]
                     cluster_id = i
                     # gather all the position reports in the timeframe of this cluster
                     cluster = tdf[(tdf.datetime > cluster_start) & (tdf.datetime < cluster_end)]
                     cluster['clust_id'] = cluster_id
                     cluster['time'] = cluster['datetime']
                     cluster['lon'] = cluster['lng']
-                    cluster.drop(['lng','datetime'], inplace=True, axis=1)
-                    df_results = df_results.append(pd.DataFrame(cluster), ignore_index=True)
+                    cluster.drop(['lng', 'datetime'], inplace=True, axis=1)
+                    df_clusts = df_clusts.append(pd.DataFrame(cluster), ignore_index=True)
 
         else:
             print("Error.  Method must be 'dbscan', 'optics', 'hdbscan', stdbscan', dynamic_segmentation,"
@@ -130,19 +130,45 @@ def get_clusters(df, method, eps_km=None, min_samp=None, eps_time=None, Ceps=Non
         print(e)
         return None
     # drop all -1 clust_id, which are all points not in clusters
-    if type(pd.DataFrame()) == type(df_results) and len(df_results) > 0:
-        df_results = df_results[df_results['clust_id'] != -1]
+    if type(pd.DataFrame()) == type(df_clusts) and len(df_clusts) > 0:
+        df_clusts = df_clusts[df_clusts['clust_id'] != -1]
 
-    return df_results
+    return df_clusts
 
 
-def calc_centers(df_results, clust_id_value='clust_id'):
+def calc_nn(df_posits, df_sites, lat='lat', lon='lon', id='id'):
+    """
+    This function finds the nearest site_id in df_sites for each posit in df_posits.  Returns a df with the id of the
+    posit from df_posits, the nearest site_id, and the distance in kilometers
+    :param df_posits: a df with id, time, lat, and lon
+    :param df_sites: a df with site_id, site_name, lat, and lon
+    :return: a df with id, site_id, and distance in km
+    """
+    # build the BallTree using the sites as the candidates
+    candidates = np.radians(df_sites.loc[:, ['lat', 'lon']].values)
+    ball_tree = BallTree(candidates, leaf_size=40, metric='euclidean')
+    # Now we are going to use sklearn's BallTree to find the nearest neighbor of
+    # each position for the nearest port.
+    points_of_int = np.radians(df_posits.loc[:, [lat, lon]].values)
+    # query the tree
+    dist, ind = ball_tree.query(points_of_int, k=1)
+    # make the df from the results and original id values
+    df_nn = pd.DataFrame(np.column_stack([df_posits[id].values,
+                                          df_sites.iloc[ind.reshape(1, -1)[0], :].site_id.values,
+                                          np.round((dist.reshape(1, -1)[0]) * 6371.0088, decimals=2)]),
+                         columns=['id', 'nearest_site_id', 'dist_km'])
+    df_nn['id'] = df_nn['id'].astype('int')
+    df_nn['nearest_site_id'] = df_nn['nearest_site_id'].astype('int')
+    return df_nn
+
+
+def calc_centers(df_clusts, clust_id_value='clust_id'):
     """This function finds the center of a cluster from dbscan results (given lat, lon, time, and clust_id columns),
     and finds the average distance for each cluster point from its cluster center, as well as the min and max times.
     Returns a df."""
-    # make a new df from the df_results grouped by cluster id
+    # make a new df from the df_clusts grouped by cluster id
     # with an aggregation for min/max/count of times and the mean for lat and long
-    df_centers = (df_results.groupby([clust_id_value])
+    df_centers = (df_clusts.groupby([clust_id_value])
                   .agg({'time': [min, max, 'count'],
                         'lat': 'mean',
                         'lon': 'mean'})
@@ -150,10 +176,10 @@ def calc_centers(df_results, clust_id_value='clust_id'):
     df_centers.columns = ['clust_id', 'time_min', 'time_max', 'total_clust_count', 'average_lat', 'average_lon']
     # find the average distance from the centerpoint
     # We'll calculate this by finding all of the distances between each point in
-    # df_results and the center of the cluster.  We'll then take the min and the mean.
+    # df_clusts and the center of the cluster.  We'll then take the min and the mean.
     haver_list = []
     for i in df_centers[clust_id_value]:
-        X = (np.radians(df_results[df_results[clust_id_value] == i]
+        X = (np.radians(df_clusts[df_clusts[clust_id_value] == i]
                         .loc[:, ['lat', 'lon']].values))
         Y = (np.radians(df_centers[df_centers[clust_id_value] == i]
                         .loc[:, ['average_lat', 'average_lon']].values))
@@ -178,10 +204,61 @@ def plot_clusters(df_posits, df_centers):
         popup = folium.Popup(f"Cluster: {row.clust_id}   Count: {row.total_clust_count}<BR>Average Dist from center "
                              f"{round(row.average_dist_from_center, 2)}<BR>Min Time:  {row.time_min}<BR>Max Time: "
                              f"{row.time_max}<BR>Time Diff: {row.time_diff}", max_width=220)
-        folium.Marker(location=[row.average_lat, row.average_lon],
+        folium.Marker(location=[row.average_lat, row.average_lon], icon=folium.Icon(color='orange'),
                       popup=popup).add_to(m)
     print(f'Plotted {len(df_centers)} total clusters.')
     return m
+
+
+def get_sites_wpi(engine):
+    sites = pd.read_sql('sites', engine, columns=['site_id', 'port_name',
+                                                'latitude', 'longitude', 'region'])
+    df_sites = sites[sites['region'] != None]
+    df_sites = df_sites.rename(columns={'latitude': 'lat', 'longitude': 'lon', 'port_name': 'site_name'})
+    return df_sites
+
+def plot_sites(df_sites):
+    # build the map
+    m = folium.Map(location=[df_sites.lat.median(), df_sites.lon.median()],
+                   zoom_start=4, tiles='OpenStreetMap')
+    # plot the sites
+    for row in df_sites.itertuples():
+        popup = folium.Popup(f"Site ID: {row.site_id}<BR>Site Name: {row.site_name}"
+                             f"<BR>Region: {row.region}", max_width=220)
+        folium.Marker(location=[row.lat, row.lon], icon=folium.Icon(color='gray'),
+                      popup=popup).add_to(m)
+    print(f'Plotted {len(df_sites)} total sites.')
+    return m
+
+
+def calc_stats(df_clusts, df_sites, df_nearby_activity):
+    # this function needs data from both the df_centers and df_nearest_sites to produce a comprehensive cluster rollup
+    df_centers = calc_centers(df_clusts)
+    df_nearest_sites = calc_nn(df_centers, df_sites, lat='average_lat', lon='average_lon', id='clust_id')
+    df_clust_rollup = pd.merge(df_centers, df_nearest_sites, how='inner', left_on='clust_id', right_on='id')
+    df_clust_rollup = df_clust_rollup[['clust_id', 'nearest_site_id', 'dist_km', 'total_clust_count']]
+
+    df_stats = pd.merge(df_clust_rollup, df_nearby_activity,
+                        how='outer', left_on='nearest_site_id', right_on='site_id', indicator=True)
+
+    # this df lists where the counts in the merge.
+    # left_only are sites only in the clustering results.  (false positives for clustering results)
+    # right_only are sites where the raw data was near but no cluster found within dist_treshold.  (false negatives for clustering results)
+    # both are ports in both datasets.  (true positives for clustering results)
+    values = (df_stats['_merge'].value_counts())
+    # recall is the proporation of relevant items selected
+    # it is the number of true positives divided by TP + FN
+    stats_recall = values['both'] / (values['both'] + values['right_only'])
+    # precision is the proportion of selected items that are relevant.
+    # it is the number of true positives our of all items selected by dbscan.
+    stats_precision = values['both'] / len(df_stats)
+    # now find the f_measure, which is the harmonic mean of precision and recall
+    stats_f_measure = 2 * ((stats_precision * stats_recall) / (stats_precision + stats_recall))
+    print(f'Precision: {round(stats_precision,4)}, Recall: {round(stats_recall,4)}, '
+          f'F1: {round(stats_f_measure,4)}')
+
+    return df_stats
+
 
 def calc_dist(df, unit='nm'):
     """
@@ -193,13 +270,13 @@ def calc_dist(df, unit='nm'):
     lon1, lat1, lon2, lat2 = map(np.radians, [df.lon.shift(1), df.lat.shift(1), df.lon, df.lat])
     dlon = lon2 - lon1
     dlat = lat2 - lat1
-    a = np.sin(dlat/2)**2 + np.cos(lat1) * np.cos(lat2) * np.sin(dlon/2)**2
+    a = np.sin(dlat / 2) ** 2 + np.cos(lat1) * np.cos(lat2) * np.sin(dlon / 2) ** 2
     r = 2 * np.arcsin(np.sqrt(a))
-    if unit =='mile':
+    if unit == 'mile':
         return 3958.748 * r
-    if unit =='km':
+    if unit == 'km':
         return 6371 * r
-    if unit =='nm':
+    if unit == 'nm':
         return 3440.65 * r
     else:
         print("Unit is not valid.  Please use 'mile', 'km', or 'nm'.")
@@ -224,6 +301,7 @@ def calc_bearing(df):
     initial_bearing = np.degrees(initial_bearing)
     compass_bearing = (initial_bearing + 360) % 360
     return round(compass_bearing, 2)
+
 
 def traj_enhance_df(df):
     """

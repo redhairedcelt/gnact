@@ -41,6 +41,64 @@ def get_edgelist(edge_table, engine, loiter_time=2):
     print(f"{len(df_list)} edges and {len(df_list['Source'].unique())} source nodes.")
     return df_list
 
+def site_check(row, dist):
+    if row['dist_km'] <= dist:
+        val = row['nearest_site_id']
+    else:
+        val = 0
+    return val
+
+# pandas
+def calc_edgelist(df_posits, df_nn, dist_km, loiter_time_mins):
+    df = pd.merge(df_posits, df_nn, how='inner', left_on='id', right_on='id')
+    # any duplicates will cause problems down the line.  catch them here.
+    df.drop_duplicates(inplace=True)
+    # site_check takes the dist to nearest port and if its less than dist, populates
+    # site_id with the nearest port id.  If the nearest site is greater than dist,
+    # site_id = 0.  0 will be used for activity "not at site"
+    df['node'] = df.apply(site_check, args=(dist_km,), axis=1)
+    # no longer need port_id and dist
+    df.drop(['nearest_site_id', 'dist_km'], axis=1, inplace=True)
+    # use shift to get the next node and previous node
+    df['next_node'] = df['node'].shift(-1)
+    df['prev_node'] = df['node'].shift(1)
+    # reduce the dataframe down to only the positions where the previous node is
+    # different from the next node.  These are the transitions between nodes
+    df_reduced = (df[df['next_node'] != df['prev_node']]
+                  .reset_index())
+    # make a df of all the starts and all the ends.  When the node is the same as
+    # the next node (but next node is different than previous node), its the start
+    # of actiivity at a node.  Similarly, when the node is the same as the previous
+    # node (but the next node is different than previous node), its the end of activity.
+    df_starts = (df_reduced[df_reduced['node'] == df_reduced['next_node']]
+                 .rename(columns={'time': 'arrival_time'})
+                 .reset_index(drop=True))
+    df_ends = (df_reduced[df_reduced['node'] == df_reduced['prev_node']]
+               .rename(columns={'time': 'depart_time'})
+               .reset_index(drop=True))
+    # now take all the pieces which have their indices reset and concat
+    df_final = (pd.concat([df_starts['node'], df_ends['next_node'], df_starts['arrival_time'],
+                           df_ends['depart_time'], df_starts['index']], axis=1)
+                .rename(columns={'next_node': 'destination'}))
+    # add in a time difference column.  cast to str because postgres doesnt like
+    # pandas time intervals
+    df_final['time_diff'] = df_final['depart_time'] - df_final['arrival_time']
+
+    # find the position count by subtracting the current index from the
+    # shifted index of the next row
+    df_final['position_count'] = df_final['index'].shift(-1) - df_final['index']
+    df_final.drop('index', axis=1, inplace=True)
+
+    # apply the loiter time filter
+    df_final = df_final[df_final['time_diff'] > pd.to_timedelta(loiter_time_mins, 'minutes')]
+    return df_final
+
+def calc_nearby_activity(df_edgelist, df_sites):
+    visited_sites = np.unique(df_edgelist[['node', 'destination']].values.reshape(-1))
+    visited_sites = (visited_sites[visited_sites > 0]).astype(np.int).tolist()
+    df_nearby_activity = df_sites[df_sites['site_id'].isin(visited_sites)]
+    return df_nearby_activity
+
 
 def get_weighted_edgelist(df_edgelist):
     # This produces a df that is the summarized edge list with weights
