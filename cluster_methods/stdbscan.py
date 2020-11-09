@@ -49,6 +49,8 @@ def ST_DBSCAN(df, spatial_threshold, temporal_threshold, min_neighbors):
                                 # TODO: verify cluster average before add new point
                                 df.at[neig_index, 'clust_id'] = cluster_label
                                 stack.append(neig_index)
+    # only return ids with a cluster
+    df = df[df['clust_id'] != -1]
     return df
 
 
