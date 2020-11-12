@@ -8,13 +8,13 @@ import skmob
 from sklearn.neighbors.ball_tree import BallTree
 from skmob.preprocessing import detection
 
+from gnact import stdbscan
+
 # sklearn tools
 from sklearn.cluster import DBSCAN
 from sklearn.cluster import OPTICS
 import hdbscan
 from sklearn.metrics.pairwise import haversine_distances
-
-from cluster_methods import tdbscan, stdbscan
 
 
 # %%
@@ -97,7 +97,7 @@ def calc_clusts(df, method, eps_km=None, min_samp=None, eps_time=None, Ceps=None
         elif method == 'tdbscan':
             df_clusts = tdbscan.T_DBSCAN(df, Ceps, eps_km, min_samp)
 
-        elif method == 'dynamic_segmentation':
+        elif method == 'dynamic':
             # make a new df to hold results
             df_clusts = pd.DataFrame()
             # turn the positions into a traj_df withink skmob package
@@ -122,7 +122,7 @@ def calc_clusts(df, method, eps_km=None, min_samp=None, eps_time=None, Ceps=None
                     df_clusts = df_clusts.append(pd.DataFrame(cluster), ignore_index=True)
 
         else:
-            print("Error.  Method must be 'dbscan', 'optics', 'hdbscan', stdbscan', dynamic_segmentation,"
+            print("Error.  Method must be 'dbscan', 'optics', 'hdbscan', stdbscan', dynamic,"
                   "or static_segmentation.")
             return None
     except Exception as e:
@@ -204,7 +204,7 @@ def plot_clusters(df_posits, df_centers):
         popup = folium.Popup(f"Cluster: {row.clust_id}   Count: {row.total_clust_count}<BR>Average Dist from center "
                              f"{round(row.average_dist_from_center, 2)}<BR>Min Time:  {row.time_min}<BR>Max Time: "
                              f"{row.time_max}<BR>Time Diff: {row.time_diff}", max_width=220)
-        folium.Marker(location=[row.average_lat, row.average_lon], icon=folium.Icon(color='orange'),
+        folium.Marker(location=[row.average_lat, row.average_lon], icon=folium.Icon(color='blue'),
                       popup=popup).add_to(m)
     print(f'Plotted {len(df_centers)} total clusters.')
     return m
@@ -231,33 +231,89 @@ def plot_sites(df_sites):
     return m
 
 
-def calc_stats(df_clusts, df_sites, df_nearby_activity):
-    # this function needs data from both the df_centers and df_nearest_sites to produce a comprehensive cluster rollup
+def calc_stats(df_clusts, df_stops, dist_threshold_km=3):
+    # rollup the clusters to their center points
     df_centers = calc_centers(df_clusts)
-    df_nearest_sites = calc_nn(df_centers, df_sites, lat='average_lat', lon='average_lon', id='clust_id')
+    # calc the nearest stop to the clusters, including the distance.  We could also use df_sites and
+    # filter down to just sites in df_stops, but this is faster.
+    df_nearest_sites = calc_nn(df_centers, df_stops, lat='average_lat', lon='average_lon', id='clust_id')
+    # correct clusters are within distance threshold of a visited point so we filter by dist_threshold
+    df_clust_rollup_correct = df_nearest_sites[(df_nearest_sites.dist_km < dist_threshold_km)]
+
+    # now group stops and clust_rollup by their site_ids, and select just one column.
+    # the result is a series with site_id as index that can be used to calc precision, recall, and f1 measure
+    df_stops_grouped = df_stops.groupby('site_id').agg('count').iloc[:, 0]
+    df_rollup_grouped = df_clust_rollup_correct.groupby(['nearest_site_id']).agg('count').iloc[:, 0]
+
+    # get the proportion of each site within stops to use for the recall
+    total_prop_stops = df_stops_grouped / df_stops_grouped.sum()
+    # get raw recall, which we calc by cluster.  therefore recall is number of clusters found at a site
+    # divided by the total number of clusters at that site.  If the value is more than 1, set it to 1.
+    recall_raw = (df_rollup_grouped / df_stops_grouped)
+    recall_raw[recall_raw > 1] = 1
+    # now multiply raw_recall by the total proportion to get a weighted value, and sum it.
+    recall = (recall_raw * total_prop_stops).sum()
+
+    # precision is the proportion of correct clusters to all clusters found.  since we are using df_stops,
+    # correct clusters are any clusters with a calculated distance less than the distance threshold.
+    precision = len(df_clust_rollup_correct) / len(df_centers)
+
+    # now determine f1 measure
+    f_measure = 2 * ((precision * recall) / (precision + recall))
+
+    stats_dict = {'precision': round(precision, 4), 'recall': round(recall, 4), 'f1': round(f_measure, 4)}
+    return stats_dict
+
+def get_df_stats(df_clusts, df_stops, dist_threshold_km=3):
+    # rollup the clusters to their center points
+    df_centers = calc_centers(df_clusts)
+    # assemble df_stats for plotting and review
+    df_nearest_sites = calc_nn(df_centers, df_stops, lat='average_lat', lon='average_lon', id='clust_id')
     df_clust_rollup = pd.merge(df_centers, df_nearest_sites, how='inner', left_on='clust_id', right_on='id')
-    df_clust_rollup = df_clust_rollup[['clust_id', 'nearest_site_id', 'dist_km', 'total_clust_count']]
 
-    df_stats = pd.merge(df_clust_rollup, df_nearby_activity,
-                        how='outer', left_on='nearest_site_id', right_on='site_id', indicator=True)
+    # false positives are clusters more than the threshold distance from a correct site in stops
+    df_fp = df_clust_rollup[(df_nearest_sites.dist_km >= dist_threshold_km)]
+    df_fp['results'] = 'False Positive'
+    # true positices are within the threshold distance
+    df_tp = df_clust_rollup[(df_nearest_sites.dist_km < dist_threshold_km)]
+    df_tp['results'] = 'True Positive'
+    # false negatives are techincally every cluster not within the threshold for each cluster found.
+    # however, we will just plot the stops that were missed rather than match up each cluster.
+    df_fn = df_stops[~df_stops.site_id.isin(df_tp.nearest_site_id.tolist())]
+    df_fn['results'] = 'False Negative'
 
-    # this df lists where the counts in the merge.
-    # left_only are sites only in the clustering results.  (false positives for clustering results)
-    # right_only are sites where the raw data was near but no cluster found within dist_treshold.  (false negatives for clustering results)
-    # both are ports in both datasets.  (true positives for clustering results)
-    values = (df_stats['_merge'].value_counts())
-    # recall is the proporation of relevant items selected
-    # it is the number of true positives divided by TP + FN
-    stats_recall = values['both'] / (values['both'] + values['right_only'])
-    # precision is the proportion of selected items that are relevant.
-    # it is the number of true positives our of all items selected by dbscan.
-    stats_precision = values['both'] / len(df_stats)
-    # now find the f_measure, which is the harmonic mean of precision and recall
-    stats_f_measure = 2 * ((stats_precision * stats_recall) / (stats_precision + stats_recall))
-    print(f'Precision: {round(stats_precision,4)}, Recall: {round(stats_recall,4)}, '
-          f'F1: {round(stats_f_measure,4)}')
-
+    df_stats = pd.concat([df_fp, df_fn, df_tp]).reset_index(drop=True)
+    df_stats = df_stats.drop(['node', 'destination', 'arrival_time', 'depart_time', 'region', 'id'], axis=1)
     return df_stats
+
+def plot_stats(df_stats, df_posits):
+    m = folium.Map(location=[df_stats.average_lat.median(), df_stats.average_lon.median()],
+                   zoom_start=4, tiles='OpenStreetMap')
+    points = list(zip(df_posits.lat, df_posits.lon))
+    folium.PolyLine(points).add_to(m)
+
+    # plot the falase positive, false negatives, and true positives
+    for idx, row in df_stats.iterrows():
+        if row['results'] == 'False Positive':
+            popup = folium.Popup(f"False Positive <BR> Cluster: {row.nearest_site_id}  Count: {row.total_clust_count}" +
+                                 f"<BR> Site_id: {row.site_id}  Site_name: {row.site_name}",
+                                 max_width=220)
+            folium.Marker(location=[row.average_lat, row.average_lon], icon=folium.Icon(color='orange'),
+                          popup=popup).add_to(m)
+        elif row['results'] == 'False Negative':
+            popup = folium.Popup(f"False Negative <BR> Site_id: {row.site_id}  Site_name: {row.site_name}",
+                                 max_width=220)
+            folium.Marker(location=[row.lat, row.lon], icon=folium.Icon(color='red'),
+                          popup=popup).add_to(m)
+        elif row['results'] == 'True Positive':
+            popup = folium.Popup(f"True Positive <BR> Cluster: {row.clust_id}   Count: {row.total_clust_count}" +
+                                 f"<BR> Site_id: {row.site_id}  Site_name: {row.site_name}",
+                                 max_width=220)
+            folium.Marker(location=[row.average_lat, row.average_lon], icon=folium.Icon(color='green'),
+                          popup=popup).add_to(m)
+    print(f'Plotted {len(df_stats)} total clusters.')
+    return m
+
 
 
 def calc_dist(df, unit='nm'):

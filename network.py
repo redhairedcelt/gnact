@@ -49,14 +49,14 @@ def site_check(row, dist):
     return val
 
 # pandas
-def calc_edgelist(df_posits, df_nn, dist_km, loiter_time_mins):
+def calc_static_seg(df_posits, df_nn, df_sites, dist_threshold_km, loiter_time_mins):
     df = pd.merge(df_posits, df_nn, how='inner', left_on='id', right_on='id')
     # any duplicates will cause problems down the line.  catch them here.
     df.drop_duplicates(inplace=True)
     # site_check takes the dist to nearest port and if its less than dist, populates
     # site_id with the nearest port id.  If the nearest site is greater than dist,
     # site_id = 0.  0 will be used for activity "not at site"
-    df['node'] = df.apply(site_check, args=(dist_km,), axis=1)
+    df['node'] = df.apply(site_check, args=(dist_threshold_km,), axis=1)
     # no longer need port_id and dist
     df.drop(['nearest_site_id', 'dist_km'], axis=1, inplace=True)
     # use shift to get the next node and previous node
@@ -91,7 +91,12 @@ def calc_edgelist(df_posits, df_nn, dist_km, loiter_time_mins):
 
     # apply the loiter time filter
     df_final = df_final[df_final['time_diff'] > pd.to_timedelta(loiter_time_mins, 'minutes')]
-    return df_final
+
+    df_stops = df_final.sort_values('arrival_time')
+    df_stops = df_stops[df_stops.node > 0]
+    df_stops = pd.merge(df_stops, df_sites, how='left', left_on='node', right_on='site_id')
+
+    return df_stops
 
 def calc_nearby_activity(df_edgelist, df_sites):
     visited_sites = np.unique(df_edgelist[['node', 'destination']].values.reshape(-1))
