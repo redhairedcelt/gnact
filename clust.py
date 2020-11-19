@@ -84,7 +84,7 @@ def calc_clusts(df, method, eps_km=None, min_samp=None, eps_time=None, Ceps=None
         elif method == 'hdbscan':
             clusterer = hdbscan.HDBSCAN(algorithm='best', approx_min_span_tree=True,
                                         gen_min_span_tree=False, leaf_size=40,
-                                        metric='euclidean', min_cluster_size=5, min_samples=min_samp)
+                                        metric='euclidean', min_cluster_size=min_samp, min_samples=1)
             clusterer.fit(X)
             results_dict = {'id': x_id, 'clust_id': clusterer.labels_, 'time': df['time'].values,
                             'lat': df['lat'].values, 'lon': df['lon'].values}
@@ -231,7 +231,7 @@ def plot_sites(df_sites):
     return m
 
 
-def calc_stats(df_clusts, df_stops, dist_threshold_km=3):
+def calc_stats(df_clusts, df_stops, dist_threshold_km=5):
     # rollup the clusters to their center points
     df_centers = calc_centers(df_clusts)
     # calc the nearest stop to the clusters, including the distance.  We could also use df_sites and
