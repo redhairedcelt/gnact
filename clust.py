@@ -8,7 +8,7 @@ import skmob
 from sklearn.neighbors.ball_tree import BallTree
 from skmob.preprocessing import detection
 
-from gnact import stdbscan
+from cluster_methods import stdbscan
 
 # sklearn tools
 from sklearn.cluster import DBSCAN
