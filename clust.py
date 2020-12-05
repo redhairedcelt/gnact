@@ -217,17 +217,21 @@ def get_sites_wpi(engine):
     df_sites = df_sites.rename(columns={'latitude': 'lat', 'longitude': 'lon', 'port_name': 'site_name'})
     return df_sites
 
-def plot_sites(df_sites):
+def plot_stops(df_stops, df_posits):
     # build the map
-    m = folium.Map(location=[df_sites.lat.median(), df_sites.lon.median()],
+    m = folium.Map(location=[df_stops.lat.median(), df_stops.lon.median()],
                    zoom_start=4, tiles='OpenStreetMap')
-    # plot the sites
-    for row in df_sites.itertuples():
-        popup = folium.Popup(f"Site ID: {row.site_id}<BR>Site Name: {row.site_name}"
-                             f"<BR>Region: {row.region}", max_width=220)
+    # plot the stops
+    for row in df_stops.itertuples():
+        popup = folium.Popup(f"Site ID: {row.node}<BR>Site Name: {row.site_name}"
+                             f"<BR>Count: {row.position_count}"
+                             f"<BR>Min Time:  {row.arrival_time}"
+                             f"<BR>Time Diff: {row.time_diff}", max_width=220)
         folium.Marker(location=[row.lat, row.lon], icon=folium.Icon(color='gray'),
                       popup=popup).add_to(m)
-    print(f'Plotted {len(df_sites)} total sites.')
+    points = list(zip(df_posits.lat, df_posits.lon))
+    folium.PolyLine(points).add_to(m)
+    print(f'Plotted {len(df_stops)} total sites.')
     return m
 
 
@@ -286,34 +290,71 @@ def get_df_stats(df_clusts, df_stops, dist_threshold_km=3):
     df_stats = df_stats.drop(['node', 'destination', 'arrival_time', 'depart_time', 'region', 'id'], axis=1)
     return df_stats
 
-def plot_stats(df_stats, df_posits):
+def plot_stats(df_stats, df_stops, df_posits):
     m = folium.Map(location=[df_stats.average_lat.median(), df_stats.average_lon.median()],
                    zoom_start=4, tiles='OpenStreetMap')
     points = list(zip(df_posits.lat, df_posits.lon))
     folium.PolyLine(points).add_to(m)
 
-    # plot the falase positive, false negatives, and true positives
+    # plot the stops
+    for row in df_stops.itertuples():
+        popup = folium.Popup(f"Site ID: {row.node}<BR>Site Name: {row.site_name}"
+                             f"<BR>Count: {row.position_count}"
+                             f"<BR>Min Time:  {row.arrival_time}"
+                             f"<BR>Time Diff: {row.time_diff}", max_width=220)
+        folium.Marker(location=[row.lat, row.lon], icon=folium.Icon(color='gray'),
+                      popup=popup).add_to(m)
+
+    # plot the false positive, false negatives, and true positives
     for idx, row in df_stats.iterrows():
         if row['results'] == 'False Positive':
-            popup = folium.Popup(f"False Positive <BR> Cluster: {row.nearest_site_id}  Count: {row.total_clust_count}" +
-                                 f"<BR> Site_id: {row.site_id}  Site_name: {row.site_name}",
+            popup = folium.Popup(f"False Positive"
+                                 f"<BR>Nearest Site ID: {row.nearest_site_id}" 
+                                 f"<BR>Dist to nearest site (km): {row.dist_km}"
+                                 f"<BR>Count: {row.total_clust_count}"
+                                 f"<BR>Cluster Duration: {row.time_diff}",
                                  max_width=220)
             folium.Marker(location=[row.average_lat, row.average_lon], icon=folium.Icon(color='orange'),
                           popup=popup).add_to(m)
         elif row['results'] == 'False Negative':
-            popup = folium.Popup(f"False Negative <BR> Site_id: {row.site_id}  Site_name: {row.site_name}",
+            popup = folium.Popup(f"False Negative"
+                                 f"<BR>Site_id: {row.site_id}"
+                                 f"<BR>Site_name: {row.site_name}"
+                                 f"<BR>Count: {row.position_count}"
+                                 f"<BR>Cluster Duration: {row.time_diff}",
                                  max_width=220)
             folium.Marker(location=[row.lat, row.lon], icon=folium.Icon(color='red'),
                           popup=popup).add_to(m)
         elif row['results'] == 'True Positive':
-            popup = folium.Popup(f"True Positive <BR> Cluster: {row.clust_id}   Count: {row.total_clust_count}" +
-                                 f"<BR> Site_id: {row.site_id}  Site_name: {row.site_name}",
+            popup = folium.Popup(f"True Positive"
+                                 f"<BR>Dist to nearest site (km): {row.dist_km}"
+                                 f"<BR>Nearest Site ID: {row.nearest_site_id}"
+                                 f"<BR>Count: {row.total_clust_count}"
+                                 f"<BR>Cluster Duration: {row.time_diff}",
                                  max_width=220)
             folium.Marker(location=[row.average_lat, row.average_lon], icon=folium.Icon(color='green'),
                           popup=popup).add_to(m)
-    print(f'Plotted {len(df_stats)} total clusters.')
+
+    print(f'Plotted {len(df_stats)} predicted clusters and {len(df_stops)} ground truth clusters.')
     return m
 
+def analyze_clusters(df_posits, df_clusts, df_stops, dist_threshold_km):
+    """
+    Roll up function to get metrics and produce plots for presentations and visualizations
+    :param df_posits:
+    :param df_clusts:
+    :param df_stops:
+    :param df_stats:
+    :param dist_threshold_km:
+    :return:
+    """
+    # get precision, recall, f1 metrics
+    print(calc_stats(df_clusts, df_stops, dist_threshold_km))
+    # get the stats df
+    df_stats = get_df_stats(df_clusts, df_stops, dist_threshold_km)
+    # plot the results
+    m = plot_stats(df_stats, df_stops, df_posits)
+    return m
 
 
 def calc_dist(df, unit='nm'):
