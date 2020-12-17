@@ -2,6 +2,8 @@
 import psycopg2
 from sqlalchemy import create_engine
 import datetime
+import numpy as np
+import pandas as pd
 
 
 # %% Database connection functions
@@ -127,3 +129,69 @@ def add_to_uid_tracker(uid, conn_pg):
     c_pg.close()
     conn_pg.close()
     return uids_len[0]  # remember its a tuple from the db.  [0] gets the int
+
+
+
+def calc_dist(df, unit='nm'):
+    """
+    Takes a df with id, lat, and lon and returns the distance  between
+    the previous point to the current point as a series.
+    :param df:
+    :return:
+    """
+    lon1, lat1, lon2, lat2 = map(np.radians, [df.lon.shift(1), df.lat.shift(1), df.lon, df.lat])
+    dlon = lon2 - lon1
+    dlat = lat2 - lat1
+    a = np.sin(dlat / 2) ** 2 + np.cos(lat1) * np.cos(lat2) * np.sin(dlon / 2) ** 2
+    r = 2 * np.arcsin(np.sqrt(a))
+    if unit == 'mile':
+        return 3958.748 * r
+    if unit == 'km':
+        return 6371 * r
+    if unit == 'nm':
+        return 3440.65 * r
+    else:
+        print("Unit is not valid.  Please use 'mile', 'km', or 'nm'.")
+        return None
+
+
+def calc_bearing(df):
+    """
+    Takes a df with id, lat, and lon and returns the computed bearing between
+    the previous point to the current point as a series.
+    :param df:
+    :return:
+    """
+    lat1 = np.radians(df.lat.shift(1))
+    lat2 = np.radians(df.lat)
+    dlon = np.radians(df.lon - df.lon.shift(1))
+    x = np.sin(dlon) * np.cos(lat2)
+    y = np.cos(lat1) * np.sin(lat2) - (np.sin(lat1) * np.cos(lat2) * np.cos(dlon))
+    initial_bearing = np.arctan2(x, y)
+    # Now we have the initial bearing but math.atan2 return values
+    # from -180° to + 180° which is not what we want for a compass bearing
+    initial_bearing = np.degrees(initial_bearing)
+    compass_bearing = (initial_bearing + 360) % 360
+    return round(compass_bearing, 2)
+
+
+def traj_enhance_df(df):
+    """
+    Takes a df with id, lat, lon, and time.  Returns a df with these same columns as well as
+    time_rounded to the lowest minute, time difference from current point and previous group,
+    time_diff_hours, course over ground, distance traveled since last point, and speed in knots
+    :param df:
+    :return:
+    """
+    # we want to round by minute and drop any duplicates
+    df['time_rounded'] = df.time.apply(lambda x: x.floor('min'))
+    df.drop_duplicates(['time'], keep='first', inplace=True)
+    # calculate time diff between two points
+    df['time_diff'] = df.time - df.time.shift(1)
+    # time diff in hours needed for speed calc
+    df['time_diff_hours'] = pd.to_timedelta(df.time_diff, errors='coerce').dt.total_seconds() / 3600
+    # calculate bearing, distance, and speed
+    df['cog'] = calc_bearing(df)
+    df['dist_nm'] = calc_dist(df, unit='nm')
+    df['speed_kts'] = df['dist_nm'] / df['time_diff_hours']
+    return df

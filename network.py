@@ -48,8 +48,19 @@ def site_check(row, dist):
         val = 0
     return val
 
-# pandas
+
 def calc_static_seg(df_posits, df_nn, df_sites, dist_threshold_km, loiter_time_mins):
+    """
+    Given a df with a lat, lon, time, and id for each position, calculate static segementation
+    based on the given df_sites, a distance threshold in km, and a loiter time in minutes.
+    The df_nn is required to find what positions are within the distance threshold of the sites.
+    :param df_posits: a df with lat, lon, time, id
+    :param df_nn: the output of gnact.clust.calc_nn
+    :param df_sites: a df with a list of sites including a site_name and site_id
+    :param dist_threshold_km: int, the maximum distance positions must be for a cluster to form near a site
+    :param loiter_time_mins: int, the minimum time positions must be within the distance threshold to fom a cluster
+    :return:
+    """
     df = pd.merge(df_posits, df_nn, how='inner', left_on='id', right_on='id')
     # any duplicates will cause problems down the line.  catch them here.
     df.drop_duplicates(inplace=True)
