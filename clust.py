@@ -251,14 +251,14 @@ def get_df_stats(df_clusts, df_stops, dist_threshold_km=3):
     df_clust_rollup = pd.merge(df_centers, df_nearest_sites, how='inner', left_on='clust_id', right_on='id')
 
     # false positives are clusters more than the threshold distance from a correct site in stops
-    df_fp = df_clust_rollup[(df_nearest_sites.dist_km >= dist_threshold_km)]
+    df_fp = df_clust_rollup.loc[(df_nearest_sites.dist_km >= dist_threshold_km)].copy()
     df_fp['results'] = 'False Positive'
     # true positices are within the threshold distance
-    df_tp = df_clust_rollup[(df_nearest_sites.dist_km < dist_threshold_km)]
+    df_tp = df_clust_rollup.loc[(df_nearest_sites.dist_km < dist_threshold_km)].copy()
     df_tp['results'] = 'True Positive'
     # false negatives are techincally every cluster not within the threshold for each cluster found.
     # however, we will just plot the stops that were missed rather than match up each cluster.
-    df_fn = df_stops[~df_stops.site_id.isin(df_tp.nearest_site_id.tolist())]
+    df_fn = df_stops.loc[~df_stops.site_id.isin(df_tp.nearest_site_id.tolist())].copy()
     df_fn['results'] = 'False Negative'
 
     df_stats = pd.concat([df_fp, df_fn, df_tp]).reset_index(drop=True)
