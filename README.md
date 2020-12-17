@@ -1,6 +1,8 @@
 # gnact
 Geospatial Network Analysis with Clustering and Time (GNACT) is a Python package to explore and analyze dense, geospatial datasets.
 
+For a demo of GNACT using AIS ship tracking data, please follow this [link to Jupyter's NBviewer](https://nbviewer.jupyter.org/github/redhairedcelt/gnact/blob/master/demo/gnact_demo.ipynb)
+
 The package includes the following main modules:
 - gnact.clust
  This module contains functions to apply a range of clustering methods against a Pandas DataFrame with a lat, lon, time, and id for each position.  The results can be summarized as clusters (calc_centers) and key metrics such as precision, recall, and F1 score can be calculated (calc_stats).  Key helper functions like calc_nn (which returns a df with the distance to the nearest site for each point) and get_df_stats (which returns a df determining if a cluster is a True Positive, False Positive, or False Negative) integrate with other GNACT functions.
