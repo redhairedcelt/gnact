@@ -6,7 +6,7 @@ import datetime
 import skmob
 from sklearn.neighbors.ball_tree import BallTree
 from skmob.preprocessing import detection
-from cluster_methods import stdbscan
+from gnact.cluster_methods import stdbscan
 
 # sklearn tools
 from sklearn.cluster import DBSCAN

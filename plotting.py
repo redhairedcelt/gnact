@@ -85,7 +85,7 @@ def plot_stats(df_stats, df_stops, df_posits):
     print(f'Plotted {len(df_stats)} predicted clusters and {len(df_stops)} ground truth clusters.')
     return m
 
-from clust import calc_stats, get_df_stats
+from gnact.clust import calc_stats, get_df_stats
 def analyze_clusters(df_posits, df_clusts, df_stops, dist_threshold_km):
     """
     Roll up function to get metrics and produce plots for presentations and visualizations
