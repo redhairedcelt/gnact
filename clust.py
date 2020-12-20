@@ -4,7 +4,7 @@ import numpy as np
 import datetime
 
 import skmob
-from sklearn.neighbors.ball_tree import BallTree
+from sklearn.neighbors import BallTree
 from skmob.preprocessing import detection
 from gnact.cluster_methods import stdbscan
 
@@ -13,7 +13,6 @@ from sklearn.cluster import DBSCAN
 from sklearn.cluster import OPTICS
 import hdbscan
 from sklearn.metrics.pairwise import haversine_distances
-
 
 # %%
 
@@ -44,12 +43,11 @@ def get_sites_wpi(engine):
     return df_sites
 
 
-def calc_clusts(df, method, eps_km=None, min_samp=None, eps_time=None, Ceps=None):
+def calc_clusts(df, method, eps_km=None, min_samp=None, eps_time=None):
     """
     Given a Pandas df with a lat, lon, time, and id named 'lat', 'lon', 'time', and 'id',
     this function will return another df with the results of a clustering algo.
     Options for clustering algorithm are
-    :param Ceps:
     :param eps_time:
     :param df: a df with a unique id, lat and lon in decimal degrees
     :param eps_km: The epsilon (or max_epsilon_ value used in the clustering algo.
@@ -58,6 +56,7 @@ def calc_clusts(df, method, eps_km=None, min_samp=None, eps_time=None, Ceps=None
     :return: a Pandas df with the id, lat, lon, and cluster id from the algo.
     """
     try:
+        # need to add tests to ensure each column exists and is in the right format
         # round to the minute and drop duplicates
         df['time'] = df['time'].dt.floor('min')
         df.drop_duplicates('time', keep='first')
@@ -119,15 +118,14 @@ def calc_clusts(df, method, eps_km=None, min_samp=None, eps_time=None, Ceps=None
                     cluster_end = stdf.leaving_datetime.loc[i, ]
                     cluster_id = i
                     # gather all the position reports in the timeframe of this cluster
-                    cluster = tdf[(tdf.datetime > cluster_start) & (tdf.datetime < cluster_end)]
+                    cluster = tdf.loc[(tdf.datetime > cluster_start) & (tdf.datetime < cluster_end)].copy()
                     cluster['clust_id'] = cluster_id
                     cluster['time'] = cluster['datetime']
                     cluster['lon'] = cluster['lng']
                     cluster.drop(['lng', 'datetime'], inplace=True, axis=1)
                     df_clusts = df_clusts.append(pd.DataFrame(cluster), ignore_index=True)
-
         else:
-            print("Error.  Method must be 'dbscan', 'optics', 'hdbscan', stdbscan', 'dynamic',")
+            print("Error.  Method must be 'dbscan', 'optics', 'hdbscan', stdbscan', or 'dynamic'.")
             return None
     except Exception as e:
         print('UID error in clustering.')
@@ -244,60 +242,38 @@ def calc_stats(df_clusts, df_stops, dist_threshold_km=5):
     return stats_dict
 
 def get_df_stats(df_clusts, df_stops, dist_threshold_km=3):
+    """
+    Determines key metrics and stats for a df_clusts DataFrame from calc_clusts when compared to a "ground truth."
+    The df_stops must have a node,
+    :param df_clusts:
+    :param df_stops: DataFrame.  List of ground truth clusters or sites used to determine the performance of df_clusts.
+    Must include a lat and lon as a float and a site_id column with a float.
+    :param dist_threshold_km:
+    :return:
+    """
+    # need to add tests for required columns.
+    # also can add in temporal filter similar to distance.
     # rollup the clusters to their center points
     df_centers = calc_centers(df_clusts)
-    # assemble df_stats for plotting and review
+    # find the closest ground truth cluster or site for each cluster in df_centers.
     df_nearest_sites = calc_nn(df_centers, df_stops, lat='average_lat', lon='average_lon', id='clust_id')
+    # merge all the data together.  df_clust_rollup now includes all details about the cluster, the ground truth,
+    #and the distance between each cluster and its nearest ground truth.
     df_clust_rollup = pd.merge(df_centers, df_nearest_sites, how='inner', left_on='clust_id', right_on='id')
 
     # false positives are clusters more than the threshold distance from a correct site in stops
-    df_fp = df_clust_rollup.loc[(df_nearest_sites.dist_km >= dist_threshold_km)].copy()
+    df_fp = df_clust_rollup.loc[(df_clust_rollup.dist_km >= dist_threshold_km)].copy()
     df_fp['results'] = 'False Positive'
     # true positices are within the threshold distance
-    df_tp = df_clust_rollup.loc[(df_nearest_sites.dist_km < dist_threshold_km)].copy()
+    df_tp = df_clust_rollup.loc[(df_clust_rollup.dist_km < dist_threshold_km)].copy()
     df_tp['results'] = 'True Positive'
     # false negatives are techincally every cluster not within the threshold for each cluster found.
     # however, we will just plot the stops that were missed rather than match up each cluster.
     df_fn = df_stops.loc[~df_stops.site_id.isin(df_tp.nearest_site_id.tolist())].copy()
     df_fn['results'] = 'False Negative'
 
+    # now concat all the pieces and rename to df_stats
     df_stats = pd.concat([df_fp, df_fn, df_tp]).reset_index(drop=True)
     df_stats = df_stats.drop(['node', 'destination', 'arrival_time', 'depart_time', 'region', 'id'], axis=1)
     return df_stats
 
-
-
-def postgres_dbscan_reworked(uid, eps_km, min_samp, method):
-    """
-    A function to conduct dbscan on the server for a global eps and min_samples value.
-    Optimized for multiprocessing.
-    :param min_samp:
-    :param eps:
-    :param uid:
-    :return:
-    """
-    # iteration_start = datetime.datetime.now()
-    params_name = f"{method}_{str(eps_km).replace('.', '_')}_{min_samp}"
-    # execute dbscan script
-    dbscan_postgres_sql = f"""
-    UPDATE clustering_results as c 
-    SET {params_name} = t.clust_id
-    FROM (SELECT id , ST_ClusterDBSCAN(geom, eps := {eps}, minpoints := {min_samp})
-          over () as clust_id
-          FROM uid_positions
-          WHERE uid = '{uid[0]}'
-          AND time between '{start_time}' and '{end_time}') as t
-          WHERE t.id = c.id
-          AND t.clust_id IS NOT NULL;"""
-    conn_pg = gsta.connect_psycopg2(gsta_config.colone_cargo_params, print_verbose=False)
-    c_pg = conn_pg.cursor()
-    c_pg.execute(dbscan_postgres_sql)
-    conn_pg.commit()
-    c_pg.close()
-    # add the uid to the tracker and get current uid count from tracker
-    uids_completed = utils.add_to_uid_tracker(uid, conn_pg)
-    conn_pg.close()
-
-    print(f'UID {uid[0]} complete in ', datetime.datetime.now() - iteration_start)
-    percentage = (uids_completed / len(uid_list)) * 100
-    print(f'Approximately {round(percentage, 3)} complete.')
