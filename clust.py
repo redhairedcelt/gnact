@@ -274,6 +274,6 @@ def get_df_stats(df_clusts, df_stops, dist_threshold_km=3):
 
     # now concat all the pieces and rename to df_stats
     df_stats = pd.concat([df_fp, df_fn, df_tp]).reset_index(drop=True)
-    df_stats = df_stats.drop(['node', 'destination', 'arrival_time', 'depart_time', 'region', 'id'], axis=1)
+    df_stats = df_stats.drop(['node', 'destination', 'region', 'id'], axis=1)
     return df_stats
 

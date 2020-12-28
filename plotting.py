@@ -59,6 +59,7 @@ def plot_stats(df_stats, df_stops, df_posits):
                                  f"<BR>Nearest Site ID: {row.nearest_site_id}" 
                                  f"<BR>Dist to nearest site (km): {row.dist_km}"
                                  f"<BR>Count: {row.total_clust_count}"
+                                 f"<BR>Min Time:  {row.time_min}"
                                  f"<BR>Cluster Duration: {row.time_diff}",
                                  max_width=220)
             folium.Marker(location=[row.average_lat, row.average_lon], icon=folium.Icon(color='orange'),
@@ -68,6 +69,7 @@ def plot_stats(df_stats, df_stops, df_posits):
                                  f"<BR>Site_id: {row.site_id}"
                                  f"<BR>Site_name: {row.site_name}"
                                  f"<BR>Count: {row.position_count}"
+                                 f"<BR>Min Time:  {row.arrival_time}"
                                  f"<BR>Cluster Duration: {row.time_diff}",
                                  max_width=220)
             folium.Marker(location=[row.lat, row.lon], icon=folium.Icon(color='red'),
@@ -77,6 +79,7 @@ def plot_stats(df_stats, df_stops, df_posits):
                                  f"<BR>Dist to nearest site (km): {row.dist_km}"
                                  f"<BR>Nearest Site ID: {row.nearest_site_id}"
                                  f"<BR>Count: {row.total_clust_count}"
+                                 f"<BR>Min Time:  {row.time_min}"
                                  f"<BR>Cluster Duration: {row.time_diff}",
                                  max_width=220)
             folium.Marker(location=[row.average_lat, row.average_lon], icon=folium.Icon(color='green'),
