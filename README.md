@@ -10,7 +10,9 @@ gnact is a Python package to explore and analyze dense, geospatial datasets.  It
 
 4. **__In development is a module including a range of time-series analysis tools.__**
 
-For a demo of GNACT using AIS ship tracking data, please follow this [link to access a demo via Jupyter's NBviewer](https://nbviewer.jupyter.org/github/redhairedcelt/gnact/blob/master/demo/gnact_demo.ipynb)
+For a demo of GNACT using real-world examples including a large sample of AIS ship tracking data, please see the following Notebooks:
+ - [Clustering demo via Jupyter's NBviewer](https://nbviewer.jupyter.org/github/redhairedcelt/gnact/blob/master/demo/gnact_clustering_demo.ipynb)
+  - [Community Detection and Comparison demo via Jupyter's NBviewer](https://nbviewer.jupyter.org/github/redhairedcelt/gnact/blob/master/demo/gnact_community_detection_demo.ipynb)
 
 The package includes the following main modules:
 ## gnact.clust

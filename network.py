@@ -5,6 +5,7 @@ import matplotlib.pyplot as plt
 
 # network tools
 import networkx as nx
+import igraph as ig
 
 def get_edgelist(edge_table, engine, loiter_time=2):
     """select all edges from the database and join them with the port info from wpi
@@ -52,14 +53,19 @@ def site_check(row, dist):
 def calc_static_seg(df_posits, df_nn, df_sites, dist_threshold_km, loiter_time_mins):
     """
     Given a df with a lat, lon, time, and id for each position, calculate static segementation
-    based on the given df_sites, a distance threshold in km, and a loiter time in minutes.
-    The df_nn is required to find what positions are within the distance threshold of the sites.
+    based on the given df_sites, a distance threshold in km, and a loiter time in minutes. This will find
+    clusters of positions within a max dist_threshold_km for a min of loiter_time_mins of any known site.
+    This results in a low false positive rate as a cluster must form near a known site but needs good baseline
+    site data to work well.  Can be helpful as a "ground truth" dataset.  The df_nn is required to find what
+    positions are within the distance threshold of the sites.
     :param df_posits: a df with lat, lon, time, id
     :param df_nn: the output of gnact.clust.calc_nn
     :param df_sites: a df with a list of sites including a site_name and site_id
     :param dist_threshold_km: int, the maximum distance positions must be for a cluster to form near a site
     :param loiter_time_mins: int, the minimum time positions must be within the distance threshold to fom a cluster
-    :return:
+    :return: df_stops, a df that contains the node id (site_id by default) of the stop, the next destination, the
+    arrival time, the depart time, the time_diff, position_count at the stop, the site_id, the site_name, the lat and
+    lon of the site, and the region (if applicable).
     """
     df = pd.merge(df_posits, df_nn, how='inner', left_on='id', right_on='id')
     # any duplicates will cause problems down the line.  catch them here.
@@ -79,7 +85,7 @@ def calc_static_seg(df_posits, df_nn, df_sites, dist_threshold_km, loiter_time_m
                   .reset_index())
     # make a df of all the starts and all the ends.  When the node is the same as
     # the next node (but next node is different than previous node), its the start
-    # of actiivity at a node.  Similarly, when the node is the same as the previous
+    # of activity at a node.  Similarly, when the node is the same as the previous
     # node (but the next node is different than previous node), its the end of activity.
     df_starts = (df_reduced[df_reduced['node'] == df_reduced['next_node']]
                  .rename(columns={'time': 'arrival_time'})
@@ -103,17 +109,13 @@ def calc_static_seg(df_posits, df_nn, df_sites, dist_threshold_km, loiter_time_m
     # apply the loiter time filter
     df_final = df_final[df_final['time_diff'] > pd.to_timedelta(loiter_time_mins, 'minutes')]
 
+    # sort by time, filter all stops in the "open"
     df_stops = df_final.sort_values('arrival_time')
     df_stops = df_stops[df_stops.node > 0]
+    # get the
     df_stops = pd.merge(df_stops, df_sites, how='left', left_on='node', right_on='site_id')
 
     return df_stops
-
-def calc_nearby_activity(df_edgelist, df_sites):
-    visited_sites = np.unique(df_edgelist[['node', 'destination']].values.reshape(-1))
-    visited_sites = (visited_sites[visited_sites > 0]).astype(np.int).tolist()
-    df_nearby_activity = df_sites[df_sites['site_id'].isin(visited_sites)]
-    return df_nearby_activity
 
 
 def get_weighted_edgelist(df_edgelist):
@@ -129,35 +131,14 @@ def get_weighted_edgelist(df_edgelist):
                             .reset_index())
     return df_edgelist_weighted
 
-def build_uid_lists(source_table, target_table, conn):
-    """A function that build a list of all unique uids in the source table that are not already
-     in the target table.  This can be used to resume processing if interrupted by only continuing
-     to process the uids required."""
-    print('Building the uid lists...')
-    # This list is all of the uids in the table of interest.  It is the
-    # total number of uids we will be iterating over.
-    c = conn.cursor()
-    c.execute(f"""SELECT DISTINCT(uid) FROM {source_table};""")
-    uid_list_potential = c.fetchall()
-    c.close()
-
-    # if we have to stop the process, we can use the uids that are already completed
-    # to build a new list of uids left to complete.  this will allow us to resume
-    # processing without repeating any uids.
-    c = conn.cursor()
-    c.execute(f"""SELECT DISTINCT(uid) FROM {target_table};""")
-    uid_list_completed = c.fetchall()
-    c.close()
-
-    # find the uids that are not in the edge table yet
-    diff = lambda l1, l2: [x for x in l1 if x not in l2]
-    uid_list = diff(uid_list_potential, uid_list_completed)
-    print('UID lists built.')
-    return uid_list
-
 
 def plot_uid(uid, df_edgelist):
-    """This function will plot the path of a given uid across an edgelist df."""
+    """ This function will plot the path of a given uid across an edgelist df.
+    :param uid: the str or int value of a uid within the df
+    :param df_edgelist: a df_edgelist
+    :return: a plot
+    """
+    """"""
     uid_edgelist = df_edgelist[df_edgelist['uid'] == uid].reset_index(drop=True)
     uid_edgelist = uid_edgelist[['Source', 'source_depart', 'Target', 'target_arrival']]
     # build the graph
@@ -225,3 +206,119 @@ def plot_from_source(source, df):
     plt.show()  # display
 
     print(df_g[['Target', 'weight']].sort_values('weight', ascending=False).reset_index())
+
+
+# community detection
+from cdlib import viz
+from cdlib import NodeClustering
+from cdlib import algorithms
+
+from sklearn import metrics
+
+
+def get_truth_communities(df_truth, df_edges):
+    """
+    Returns a CDLib NodeClustering object gpt use in comupting and plotting communities
+    :param df_truth: a dataframe with a "node" and "truth" column listing each nodes "true" community
+    :param df_edges" a dataframe with the edges as "source" and "target"
+    :return:
+    """
+    # make the nx graph
+    nx_g = nx.from_edgelist(df_edges.values)
+    # need to make a nodeclustering object for ground truth for later use
+    # first get all the unique communities
+    truth_coms = df_truth['truth'].unique()
+    # define an empty list to catch a list of all nodes in each community
+    communities_list = list()
+    # iterate through the communities to get the nodes in each community and add them to the set as frozensets
+    for com in truth_coms:
+        com_nodes = df_truth[df_truth['truth'] == com].iloc[:, 0].values
+        communities_list.append(com_nodes.tolist())
+    # make the nodeclustering object
+    ground_truth_com = NodeClustering(communities=communities_list, graph=nx_g, method_name="ground_truth")
+    return ground_truth_com
+
+def evaluate_comms(nx_g, df_nodes, name, algo):
+    # get the predicted communities from the algo
+    pred_coms = algo(nx_g)
+    communities = pred_coms.communities
+
+    # need to convert the community groups from list of lists to a dict of lists for ingest to df
+    coms_dict = dict()
+    for c in range(len(communities)):
+        for i in communities[c]:
+            coms_dict[i] = [c]
+
+    # make a df with the results of the algo
+    df_coms = pd.DataFrame.from_dict(coms_dict).T.reset_index()
+    df_coms.columns = ['node', name]
+    # merge this results with the df_nodes to keep track of all the nodes' clusters
+    df_compare = pd.merge(df_nodes, df_coms, how='left', left_on='node', right_on='node')
+
+    # We can then just adjusted mutual info to find similarity score
+    ami_score = metrics.adjusted_mutual_info_score(df_compare[name], df_compare['truth'])
+    print(f'The AMI for {name} algorithm is {round(ami_score, 3)}.')
+    results = {'name': name,
+               'AMI': round(ami_score, 3),
+               'pred_coms': pred_coms,
+               'numb_communities': len(communities),
+               'truth_communities': len(df_compare['truth'].unique())}
+
+    return results, pred_coms
+
+def analyze_comms(df_edges, df_truth, graph_name, algo_dict, print_verbose=True):
+    # need to read the edges df as a list of values into networkx
+    nx_graph = nx.from_edgelist(df_edges.values)
+
+    # most algos need the largest connected component (lcc) to find communities, so lets do that next.
+    # use networkx to build the graph, find the nodes of the lcc, and build the subgraph of interest
+    lcc = max(nx.connected_components(nx_graph), key=len)
+    nx_g = nx_graph.subgraph(lcc)
+
+    # define the positions here so all the cluster plots in the loop are the same structure
+    pos = nx.spring_layout(nx_g)
+
+    # adjust label pos
+    label_pos = dict()
+    for k, v in pos.items():
+        label_pos[k] = (v[0], (v[1] + 0.05))
+
+    # we need to only include nodes that are in the lcc, so lets filter down the df_truth
+    # next reduce our ground truth df down to just those nodes in the lcc.
+    df_truth = df_truth[df_truth['node'].isin(list(lcc))]
+
+    # use gnact's network module to get the NodeClustering object from the truth and edges
+    ground_truth_com = get_truth_communities(df_truth, df_edges)
+
+    # plot the original network with the ground truth communities
+    viz.plot_network_clusters(nx_g, ground_truth_com, pos, figsize=(10, 5))
+    nx.draw_networkx_labels(nx_g, pos=label_pos)
+    plt.title(f'Ground Truth of {graph_name}')
+    plt.show()
+
+    # make a dict to store results about each algo
+    results_list = []
+    # make a df with all the nodes.  will capture each model's clustering
+    df_nodes = pd.DataFrame(list(nx_g.nodes))
+    df_nodes.columns = ['node']
+    df_nodes = pd.merge(df_nodes, df_truth, how='left', left_on='node', right_on='node')
+
+
+    for name, algo in algo_dict.items():
+        try:
+            # use GNACT's abstraction of CDLib's library of algorithms
+            results, pred_coms = evaluate_comms(nx_g, df_nodes, name, algo)
+            results_list.append(results)
+
+            if print_verbose=True:
+                # plot the network clusters
+                viz.plot_network_clusters(nx_g, pred_coms, pos, figsize=(10, 5))
+                nx.draw_networkx_labels(nx_g, pos=label_pos)
+                plt.title(f"Clusters for {name} algo of {graph_name}, \n AMI = {round(results['AMI'], 3)}")
+                plt.show()
+
+        except Exception as e:
+            print(f'Error with algorithm {name}:')
+            print(e)
+
+    return results_list
