@@ -310,7 +310,7 @@ def analyze_comms(df_edges, df_truth, graph_name, algo_dict, print_verbose=True)
             results, pred_coms = evaluate_comms(nx_g, df_nodes, name, algo)
             results_list.append(results)
 
-            if print_verbose=True:
+            if print_verbose==True:
                 # plot the network clusters
                 viz.plot_network_clusters(nx_g, pred_coms, pos, figsize=(10, 5))
                 nx.draw_networkx_labels(nx_g, pos=label_pos)
