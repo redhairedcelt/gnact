@@ -1,0 +1,22 @@
+name: gnact_py38
+channels:
+ - https://conda.anaconda.org/conda-forge/
+dependencies:
+ - python=3.8
+ - pandas
+ - numpy
+ - scikit-learn
+ - hdbscan
+ - psycopg2
+ - sqlalchemy
+ - matplotlib
+ - networkx
+ - python-igraph
+ - folium
+ - scikit-mobility
+ - geopy
+ - nbconvert
+ - pip>=20
+ - pip:
+   - cdlib
+   - spyder-notebook

@@ -7,7 +7,7 @@ import matplotlib.pyplot as plt
 import networkx as nx
 import igraph as ig
 
-def get_edgelist(edge_table, engine, loiter_time=2):
+def get_edgelist(edge_table, engine=False, loiter_time=2):
     """select all edges from the database and join them with the port info from wpi
     if the node is greater than 0 (not 0 which is open ocean or null)
     and has a time diff less than 2 hours.  That should also eliminate ports a

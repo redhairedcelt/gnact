@@ -43,7 +43,8 @@ def get_sites_wpi(engine):
     return df_sites
 
 
-def calc_clusts(df, method, eps_km=None, min_samp=None, eps_time=None):
+def calc_clusts(df, method, lat='lat', lon='lon', id='id', time='time',
+                eps_km=None, min_samp=None, eps_time=None):
     """
     Given a Pandas df with a lat, lon, time, and id named 'lat', 'lon', 'time', and 'id',
     this function will return another df with the results of a clustering algo.
@@ -58,14 +59,16 @@ def calc_clusts(df, method, eps_km=None, min_samp=None, eps_time=None):
     try:
         # need to add tests to ensure each column exists and is in the right format
         # round to the minute and drop duplicates
-        df['time'] = df['time'].dt.floor('min')
-        df.drop_duplicates('time', keep='first')
+        df[time] = df[time].dt.floor('min').copy()
+        df.drop_duplicates(time, keep='first')
         # format data for clustering
-        X = (np.radians(df.loc[:, ['lon', 'lat']].values))
-        x_id = df.loc[:, 'id'].astype('int').values
+        X = (np.radians(df.loc[:, [lon, lat]].values))
+        x_id = df.loc[:, id].astype('int').values
         method = str(method)
+        uid = df['uid'].iloc[0]
+        df = df.drop('uid', axis=1)
     except Exception as e:
-        print("Unable to convert 'lat', 'lon', 'time', or 'id' values.  Ensure columns are labeled correctly.")
+        print("Unable to convert 'id', 'lat', 'lon', 'time', or 'uid' values.  Ensure columns are labeled correctly.")
         print(e)
     # execute the clustering method
     try:
@@ -74,8 +77,8 @@ def calc_clusts(df, method, eps_km=None, min_samp=None, eps_time=None):
             dbscan = DBSCAN(eps=eps_km / 6371, min_samples=min_samp, algorithm='kd_tree',
                             metric='euclidean', n_jobs=1)
             dbscan.fit(X)
-            results_dict = {'id': x_id, 'clust_id': dbscan.labels_, 'time': df['time'].values,
-                            'lat': df['lat'].values, 'lon': df['lon'].values}
+            results_dict = {'id': x_id, 'clust_id': dbscan.labels_, 'time': df[time].values,
+                            'lat': df[lat].values, 'lon': df[lon].values}
             # gather the output as a dataframe
             df_clusts = pd.DataFrame(results_dict)
         elif method == 'optics':
@@ -84,8 +87,8 @@ def calc_clusts(df, method, eps_km=None, min_samp=None, eps_time=None):
             optics = OPTICS(max_eps=eps_km / 6371, min_samples=min_samp, metric='euclidean', cluster_method='xi',
                             algorithm='kd_tree', n_jobs=1)
             optics.fit(X)
-            results_dict = {'id': x_id, 'clust_id': optics.labels_, 'time': df['time'].values,
-                            'lat': df['lat'].values, 'lon': df['lon'].values}
+            results_dict = {'id': x_id, 'clust_id': optics.labels_, 'time': df[time].values,
+                            'lat': df[lat].values, 'lon': df[lon].values}
             # gather the output as a dataframe
             df_clusts = pd.DataFrame(results_dict)
         elif method == 'hdbscan':
@@ -93,8 +96,8 @@ def calc_clusts(df, method, eps_km=None, min_samp=None, eps_time=None):
                                         gen_min_span_tree=False, leaf_size=40,
                                         metric='euclidean', min_cluster_size=min_samp, min_samples=1)
             clusterer.fit(X)
-            results_dict = {'id': x_id, 'clust_id': clusterer.labels_, 'time': df['time'].values,
-                            'lat': df['lat'].values, 'lon': df['lon'].values}
+            results_dict = {'id': x_id, 'clust_id': clusterer.labels_, 'time': df[time].values,
+                            'lat': df[lat].values, 'lon': df[lon].values}
             # gather the output as a dataframe
             df_clusts = pd.DataFrame(results_dict)
         elif method == 'stdbscan':
@@ -105,7 +108,7 @@ def calc_clusts(df, method, eps_km=None, min_samp=None, eps_time=None):
             # make a new df to hold results
             df_clusts = pd.DataFrame()
             # turn the positions into a traj_df withink skmob package
-            tdf = skmob.TrajDataFrame(df, latitude='lat', longitude='lon', datetime='time')
+            tdf = skmob.TrajDataFrame(df, latitude=lat, longitude=lon, datetime=time)
             # the stops_traj_df has one row per each stop
             stdf = detection.stops(tdf, minutes_for_a_stop=eps_time, spatial_radius_km=eps_km, leaving_time=True,
                                    no_data_for_minutes=360, min_speed_kmh=70)
@@ -120,7 +123,7 @@ def calc_clusts(df, method, eps_km=None, min_samp=None, eps_time=None):
                     # gather all the position reports in the timeframe of this cluster
                     cluster = tdf.loc[(tdf.datetime > cluster_start) & (tdf.datetime < cluster_end)].copy()
                     cluster['clust_id'] = cluster_id
-                    cluster['time'] = cluster['datetime']
+                    cluster[time] = cluster['datetime']
                     cluster['lon'] = cluster['lng']
                     cluster.drop(['lng', 'datetime'], inplace=True, axis=1)
                     df_clusts = df_clusts.append(pd.DataFrame(cluster), ignore_index=True)
@@ -134,6 +137,10 @@ def calc_clusts(df, method, eps_km=None, min_samp=None, eps_time=None):
     # drop all -1 clust_id, which are all points not in clusters
     if type(pd.DataFrame()) == type(df_clusts) and len(df_clusts) > 0:
         df_clusts = df_clusts[df_clusts['clust_id'] != -1]
+    # add back the uid field
+    df_clusts['uid'] = uid
+    # ensure the final output has columns in correct order
+    df_clusts = df_clusts.reindex(columns=['id', 'clust_id', 'time', 'lat', 'lon', 'uid'])
     return df_clusts
 
 
@@ -165,7 +172,7 @@ def calc_nn(df_posits, df_sites, lat='lat', lon='lon', id='id'):
 
 def calc_centers(df_clusts, clust_id_value='clust_id'):
     """
-    This function finds the center of a cluster from dbscan results (given lat, lon, time, and clust_id columns),
+    This function finds the center of a cluster from clustering results (given lat, lon, time, and clust_id columns),
     and finds the average distance for each cluster point from its cluster center, as well as the min and max times.
     Returns a df.
     :param df_clusts: the results of calc_clusters
@@ -182,8 +189,6 @@ def calc_centers(df_clusts, clust_id_value='clust_id'):
                   .reset_index(drop=False))
     df_centers.columns = ['clust_id', 'time_min', 'time_max', 'total_clust_count', 'average_lat', 'average_lon']
     # find the average distance from the centerpoint
-    # We'll calculate this by finding all of the distances between each point in
-    # df_clusts and the center of the cluster.  We'll then take the min and the mean.
     haver_list = []
     for i in df_centers[clust_id_value]:
         X = (np.radians(df_clusts[df_clusts[clust_id_value] == i]
@@ -196,7 +201,10 @@ def calc_centers(df_clusts, clust_id_value='clust_id'):
     # merge the haver results back to df_centers
     haver_df = pd.DataFrame(haver_list)
     df_centers = pd.merge(df_centers, haver_df, how='left', on=clust_id_value)
+    # get the time_diff of from cluster start to cluster end
     df_centers['time_diff'] = df_centers['time_max'] - df_centers['time_min']
+    # add back in the uid column
+    df_centers['uid'] = df_clusts['uid'].iloc[0]
     return df_centers
 
 
